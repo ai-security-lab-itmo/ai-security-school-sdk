@@ -1,0 +1,37 @@
+[project]
+name = "ai-security-school-sdk"
+version = "0.1.0"
+description = "Python client for AI Security School learner actions and isolated agent experiments"
+readme = "README.md"
+authors = [
+    { name = "germankochnev", email = "kochgerm@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.10,<3",
+    "jsonschema>=4.23,<5",
+    "referencing>=0.35,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<1", "mypy>=1.15,<2", "types-jsonschema>=4.23"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
