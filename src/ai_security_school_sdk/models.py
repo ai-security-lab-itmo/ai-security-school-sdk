@@ -47,6 +47,7 @@ class TaskDocumentation(TaskSummary):
     action_payload_examples: list[JsonObject] = Field(default_factory=list)
     actions: list[ActionDescriptor] = Field(default_factory=list)
     supports_grading: bool
+    supports_standalone_grading: bool
 
 
 class RuntimeResponse(PublicModel):

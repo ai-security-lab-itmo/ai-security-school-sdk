@@ -31,7 +31,7 @@ def main() -> None:
             for payload in stage["payloads"]:
                 response = task.act(payload)
                 print(response.model_dump_json(indent=2), flush=True)
-            if task.documentation().supports_grading:
+            if task.documentation().supports_standalone_grading:
                 verdict = task.grade()
                 print(verdict.model_dump_json(indent=2), flush=True)
                 if not verdict.grader_passed:

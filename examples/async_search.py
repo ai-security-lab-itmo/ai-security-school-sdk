@@ -50,7 +50,7 @@ async def main() -> None:
             if response.status == "locked":
                 print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
                 break
-            if docs.supports_grading:
+            if docs.supports_standalone_grading:
                 verdict = await task.grade()
                 result["verdict"] = verdict.model_dump(mode="json")
             print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)

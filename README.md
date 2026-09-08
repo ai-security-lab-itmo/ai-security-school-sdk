@@ -105,7 +105,7 @@ with Client.from_env() as client:
     current = task.state()
     print(current.status, current.missing_prerequisites)
 
-    if task.documentation().supports_grading:
+    if task.documentation().supports_standalone_grading:
         verdict = task.grade()
         print(verdict.grader_passed, verdict.grader_result, verdict.completed)
 
@@ -113,6 +113,10 @@ with Client.from_env() as client:
     # Явный сброс через существующее поведение среды:
     # task.reset()
 ```
+
+`supports_grading` означает наличие оценивания вообще; `supports_standalone_grading`
+разрешает отдельный вызов `grade()`. Некоторые задания оценивают ответ внутри
+своих действий, например `submit_card` или `submit_finding`.
 
 У одного пользователя задачи одной среды разделяют состояние с браузером и
 другими скриптами. Получение нового handle или создание второго клиента не

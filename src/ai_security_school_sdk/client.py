@@ -18,7 +18,7 @@ from ._http import (
     retry_delay,
 )
 from ._schema import action_payload, json_object, validate_payload
-from .errors import ConfigurationError, ProtocolError, TransportError
+from .errors import ActionValidationError, ConfigurationError, ProtocolError, TransportError
 from .models import (
     ActionDescriptor,
     InstanceDocumentation,
@@ -183,6 +183,11 @@ class TaskResource(TaskHandle):
         )
 
     def grade(self, payload: JsonObject | None = None) -> RuntimeResponse:
+        validated = json_object(payload if payload is not None else {})
+        if not self.documentation().supports_standalone_grading:
+            raise ActionValidationError(
+                "Standalone grading is unavailable; inspect the task's documented actions"
+            )
         return parse_model(
             RuntimeResponse,
             self._client._request(
@@ -190,7 +195,7 @@ class TaskResource(TaskHandle):
                 "grade",
                 body={
                     "task_id": identifier(self.task_id),
-                    "payload": json_object(payload if payload is not None else {}),
+                    "payload": validated,
                 },
             ),
         )

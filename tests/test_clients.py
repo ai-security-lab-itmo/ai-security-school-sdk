@@ -80,6 +80,7 @@ class AgentEnvServer:
             if named
             else [],
             "supports_grading": True,
+            "supports_standalone_grading": True,
             "future_documentation": "preserved",
         }
 
@@ -308,6 +309,19 @@ async def test_grade_payload_passed_and_validated_without_requiring_named_action
     with pytest.raises(ActionValidationError):
         await invoke(task.grade, {"answer": float("inf")})
     assert len(server.requests) == before
+
+
+async def test_inline_grading_is_rejected_before_mutation_using_fresh_documentation(
+    setup: Any,
+) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+    server.docs["task_chat"]["supports_standalone_grading"] = False
+    with pytest.raises(ActionValidationError, match="Standalone grading is unavailable"):
+        await invoke(task.grade)
+    assert not any(request.method == "POST" for request in server.requests)
+    assert task.info.supports_grading is True
+    assert task.info.supports_standalone_grading is False
 
 
 @pytest.mark.parametrize("mutation", ["act", "grade", "reset"])
