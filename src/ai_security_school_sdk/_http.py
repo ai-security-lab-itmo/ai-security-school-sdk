@@ -1,21 +1,19 @@
-"""Shared transport policy and envelope parsing for both client variants."""
+"""Transport policy and response parsing shared by synchronous and async clients."""
 
 import math
 import os
 import re
-import time
 from typing import Any
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
 
 from .errors import ConfigurationError, ProtocolError, api_error
-from .models import APIErrorDetail, JsonObject, PublicModel
+from .models import JsonObject, PublicModel
 
 DEFAULT_BASE_URL = "https://plgn.aisecschool.ru"
-API_PREFIX = "/api/learner/v1/"
+API_PREFIX = "/api/agent-env/"
 RETRYABLE_STATUS = {429, 502, 503, 504}
 
 
@@ -47,7 +45,10 @@ def client_options(
 ) -> dict[str, Any]:
     if not token or token != token.strip() or any(ord(c) < 33 or ord(c) > 126 for c in token):
         raise ConfigurationError("Set AI_SECURITY_SCHOOL_TOKEN to a valid learner token")
-    url = urlsplit(base_url)
+    try:
+        url = urlsplit(base_url)
+    except ValueError as exc:
+        raise ConfigurationError("base_url must be a valid server URL") from exc
     if (
         url.scheme not in {"https", "http"}
         or not url.netloc
@@ -57,7 +58,7 @@ def client_options(
         or url.fragment
         or url.path.rstrip("/") not in {"", API_PREFIX.rstrip("/")}
     ):
-        raise ConfigurationError("base_url must be a server origin or learner v1 API base URL")
+        raise ConfigurationError("base_url must be a server origin or agent-env API base URL")
     if url.scheme == "http" and url.hostname not in {"localhost", "127.0.0.1", "::1", "testserver"}:
         raise ConfigurationError(
             "Remote servers require HTTPS; HTTP is supported only for local use"
@@ -71,24 +72,11 @@ def client_options(
         "headers": {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "User-Agent": "ai-security-school-sdk/0.1.1",
+            "User-Agent": "ai-security-school-sdk/0.2.0",
         },
         "timeout": timeout,
         "follow_redirects": False,
     }
-
-
-def request_headers(method: str, idempotency_key: str | None) -> dict[str, str]:
-    if method == "GET":
-        return {}
-    key = idempotency_key if idempotency_key is not None else str(uuid4())
-    if (
-        not isinstance(key, str)
-        or not 1 <= len(key) <= 200
-        or any(ord(c) < 33 or ord(c) > 126 for c in key)
-    ):
-        raise ConfigurationError("idempotency_key must be 1–200 printable ASCII characters")
-    return {"Idempotency-Key": key}
 
 
 def retry_delay(response: httpx.Response | None, attempt: int, backoff: float) -> float:
@@ -102,27 +90,26 @@ def retry_delay(response: httpx.Response | None, attempt: int, backoff: float) -
     return min(math.ldexp(backoff, min(attempt, 10)), 30.0)
 
 
-def remaining_timeout(timeout: float, deadline: float | None) -> float:
-    if deadline is None:
-        return timeout
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise TimeoutError("Request polling deadline reached")
-    return min(timeout, remaining)
-
-
 def decode_response(response: httpx.Response) -> JsonObject:
     if not 200 <= response.status_code < 300:
         try:
-            error = APIErrorDetail.model_validate(response.json()["error"])
-        except (ValueError, TypeError, KeyError):
-            raise api_error(
-                "http_error",
-                f"Server returned HTTP {response.status_code}",
-                status_code=response.status_code,
-            ) from None
+            body = response.json()
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        detail = body.get("detail")
+        message = (
+            detail if isinstance(detail, str) else f"Server returned HTTP {response.status_code}"
+        )
+        code = body.get("code")
+        if not isinstance(code, str):
+            code = detail if isinstance(detail, str) and identifier_code(detail) else "http_error"
         raise api_error(
-            error.code, error.message, status_code=response.status_code, details=error.details
+            code,
+            message,
+            status_code=response.status_code,
+            details={key: value for key, value in body.items() if key not in {"detail", "code"}},
         )
     try:
         value = response.json()
@@ -133,9 +120,12 @@ def decode_response(response: httpx.Response) -> JsonObject:
     return value
 
 
+def identifier_code(value: str) -> bool:
+    return re.fullmatch(r"[a-z][a-z0-9_]*", value) is not None
+
+
 def parse_model[ModelT: PublicModel](model: type[ModelT], value: JsonObject) -> ModelT:
     try:
         return model.model_validate(value)
     except ValidationError as exc:
-        # Do not print bodies which may include learner payloads or private data.
-        raise ProtocolError(f"Server returned an invalid {model.__name__} envelope") from exc
+        raise ProtocolError(f"Server returned an invalid {model.__name__} response") from exc

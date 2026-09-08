@@ -1,141 +1,132 @@
 # AI Security School SDK
 
-Python-клиент для учебных агентских лабораторий. Скрипт атаки работает на вашей
-машине, а SDK вызывает явно доступные **действия студента** в персональном прогоне
-на платформе. Внутренние инструменты атакуемого агента через SDK не публикуются.
+Python-клиент для работы с агентными средами полигона AI Security School.
+SDK получает документацию конкретной задачи и вызывает тот же `agent-env` API,
+которым пользуется браузер: состояние, действия, проверку и сброс.
 
-Требуется Python 3.12+. Исходники и релизы доступны в
-[публичном репозитории](https://github.com/ai-security-lab-itmo/ai-security-school-sdk).
+## Установка
 
-## Установка и токен
-
-Установите SDK из [PyPI](https://pypi.org/project/ai-security-school-sdk/):
+Требуется Python 3.12 или новее.
 
 ```sh
 python -m pip install ai-security-school-sdk
 ```
 
-Чтобы зафиксировать версию для воспроизводимых экспериментов:
+Для воспроизводимой установки этой версии:
 
 ```sh
-python -m pip install ai-security-school-sdk==0.1.1
+python -m pip install ai-security-school-sdk==0.2.0
 ```
 
-На странице операции выберите «Подключить Python SDK» и получите токен. Он
-ограничен одной операцией и имеет срок действия. Передайте его через переменную
-окружения `AI_SECURITY_SCHOOL_TOKEN`; не сохраняйте токен в коде или репозитории.
-Необязательная `AI_SECURITY_SCHOOL_BASE_URL` по умолчанию равна
-`https://plgn.aisecschool.ru`. Для удалённых серверов необходим HTTPS.
+Версия 0.2.0 меняет публичный интерфейс SDK. Вместо отдельных лабораторий и
+прогонов используются существующие экземпляры `agent-env` и их задачи.
 
-## Первый вызов
+## Подключение и документация
+
+На странице операции откройте «Подключить Python SDK», создайте токен и передайте
+его через переменную окружения. Токен ограничен выбранной операцией.
+`AI_SECURITY_SCHOOL_BASE_URL` можно задать для другого развёртывания; по умолчанию
+используется `https://plgn.aisecschool.ru`.
+
+```sh
+export AI_SECURITY_SCHOOL_TOKEN="YOUR_TOKEN"
+```
 
 ```python
 from ai_security_school_sdk import Client
 
 with Client.from_env() as client:
-    for available in client.labs.list():
-        print(available.lab_id, available.title)
+    for env in client.envs.list():
+        print(env.instance_id, env.title)
+        for task in env.tasks.list():
+            print(task.task_id, task.title)
 
-    lab = client.labs.get("YOUR_LAB_ID")
-    run = lab.runs.create()
-    print("Сохраните run_id для продолжения:", run.run_id)
-
-    for action in run.actions.list():
-        print(action.name, action.description)
-        print(action.input_schema)
-        print(action.examples)
-
-    # Имя и аргументы выбираются из manifest текущей CTF.
-    result = run.actions.call("send_message", {"message": "Проверь новый документ"})
-    print(result.data)
-    print(run.observation().state)
+    task = client.tasks.get("YOUR_TASK_ID")
+    docs = task.documentation()
+    print(docs.instructions)
+    print(docs.action_payload_schema)
+    print(docs.action_payload_examples)
+    for action in docs.actions:
+        print(action.name, action.description, action.input_schema, action.examples)
 ```
 
-`send_message` здесь — пример имени, а не встроенный метод SDK. Конкретные CTF
-могут предоставлять разные действия: добавление документа, сообщение агенту,
-загрузку вложения и другие операции. SDK получает их имена и JSON Schema от
-сервера. Новый набор действий не требует новой версии Python-пакета.
+`client.envs.get(instance_id)` возвращает одну среду. `env.tasks.list()` возвращает
+задачи из полученного списка; `env.tasks.get(task_id)` загружает документацию
+выбранной задачи. Среда соответствует `agent-env-instance`, задача —
+`ctf-instance`. Документация описывает доступные студенту точки входа, а не
+внутренние инструменты агента. Набор действий и схемы приходят с сервера, поэтому
+новая задача не требует новой версии SDK.
 
-Вызов проверяет аргументы локально и передаёт `expected_task_id`. Сервер повторно
-проверяет действие, права и аргументы. SDK не загружает внешние ссылки JSON Schema
-и не исполняет код из manifest. Если этап изменился через другой клиент, вызов
-возвращает `ConflictError`; явно выполните `run.refresh()` и изучите новый набор.
+## Выполнение действий
 
-Внешние поверхности атаки, например реестр пакетов или MCP-сервис, не перечисляются
-автоматически. Если они входят в сценарий, взаимодействуйте с ними через их
-собственные интерфейсы; SDK управляет только действиями, опубликованными CTF.
-
-## Прогоны, этапы и ветвление
+Для действия с именем используйте `task.actions.call(name, arguments)`.
+Имя и аргументы выбираются из документации конкретной задачи:
 
 ```python
 with Client.from_env() as client:
-    run = client.runs.get("SAVED_RUN_ID")
-    checkpoint = run.checkpoint()
-    branch = checkpoint.fork()
-    print(branch.run_id, branch.task_id)
+    task = client.tasks.get("YOUR_TASK_ID")
+    print(task.actions.list())
 
-    # Здесь выполняются доступные действия атаки.
-    verdict = branch.submit()
-    print(verdict.passed, verdict.success_rate)
-    if verdict.passed:
-        branch.advance()  # Явный переход, если есть следующий этап.
-        print(branch.actions.list())
+    # Используйте это имя только если оно есть в документации выбранной задачи.
+    result = task.actions.call("send_message", {"message": "Проверь новый документ"})
+    print(result.status, result.response, result.state)
+    print(task.state().model_dump())
 ```
 
-Этапы одной ветки разделяют состояние. Разные прогоны и forks независимы. Внутри
-одного прогона одновременно исполняется одно задание; для параллельного поиска
-создавайте отдельные прогоны. Новый прогон не обновляет общий бюджет пользователя.
-Checkpoint доступен для свободного прогона; fork сохраняет его состояние и этап.
+Метод вставляет поле `action` в тело запроса. В `arguments` передаются остальные
+поля; `input_schema` и `examples` описанного действия не содержат `action`.
+SDK проверяет аргументы и полное тело по JSON Schema перед отправкой. Сервер
+применяет проверки существующего обработчика действия, а также контролирует
+доступ, пререквизиты и бюджет пользователя.
 
-`submit()` сдаёт записанный сервером результат вашей атаки. Проверка может
-повторять действия на скрытых сценариях. Загружать Python-программу для исполнения
-на сервере не требуется. Успешный обычный вызов действия сам по себе не даёт зачёт.
-
-`run.close()` закрывает серверный прогон явно. Выход из `with Client(...)` закрывает
-только HTTP-соединения и сохраняет прогон для продолжения.
-
-## Долгие задания, повторы и ошибки
+`task.act(payload)` принимает полное нативное тело действия. Так поддерживаются
+и существующие среды, у которых нет именованных действий, например чат:
 
 ```python
-from ai_security_school_sdk import Client, JobTimeoutError
-
 with Client.from_env() as client:
-    run = client.runs.get("SAVED_RUN_ID")
-    job = run.actions.start_call("send_message", {"message": "Обработай заявку"})
-    print("Сохраните job_id:", job.job_id)
-    try:
-        result = job.wait(timeout=120, poll_interval=0.5)
-    except JobTimeoutError as error:
-        # Истечение времени ожидания не отменяет серверное задание.
-        resumed = client.jobs.get(error.job_id)
-        result = resumed.wait(timeout=120)
-    print(result)
+    task = client.tasks.get("YOUR_CHAT_TASK_ID")
+    docs = task.documentation()
+    print(docs.action_payload_schema, docs.action_payload_examples)
+    result = task.act({"message": "Привет"})
+    print(result.model_dump())
 ```
 
-- `run.actions.call()` и `run.submit()` запускают задание и ждут результат.
-  `start_call()` и `start_submission()` сразу возвращают handle задания.
-- `client.jobs.get(id)`, `job.refresh()`, `job.cancel()` и `job.result()` позволяют
-  управлять уже созданным заданием. Отмена не возвращает стоимость LLM-запросов,
-  которые уже отправлены.
-- Все изменения имеют `Idempotency-Key`. Сетевые повторы используют тот же ключ
-  и тело; SDK никогда не создаёт новый ключ внутри повторного запроса.
-- Для восстановления после завершения процесса передайте сохранённый
-  `idempotency_key=`. `TransportError.idempotency_key` содержит ключ запроса с
-  неопределённым результатом. С тем же ключом повторяйте только то же действие,
-  аргументы и текущую CTF; не создавайте новую попытку вслепую.
-- По умолчанию доступны два повтора при сетевой ошибке и HTTP 429/502/503/504.
-  Параметры клиента: `timeout=30`, `max_retries=2`, `retry_backoff=0.25`.
-  Серверные HTTP-ошибки и ошибки самого задания после polling не запускают новую
-  задачу.
-- `JobTimeoutError` содержит `job_id`. `JobInterruptedError` означает, что
-  безопасное автоматическое продолжение исполнения невозможно; изучите историю.
-- `AuthenticationError`, `PermissionDeniedError`, `ConflictError`,
-  `StageLockedError`, `LimitExceededError` наследуют `APIError` с полями `code`,
-  `message`, `details`, `status_code`, `job_id`.
-- `ActionValidationError` описывает локальное несоответствие схеме, а
-  `ProtocolError` — некорректный ответ или неподдерживаемую ссылку схемы.
+Пустой `docs.actions` не означает отсутствие возможностей: используйте полную
+схему `action_payload_schema`. SDK не угадывает имена действий по коду runtime.
+Документация не исполняется как Python-код, внешние ссылки JSON Schema не
+загружаются. Внешние поверхности сценария, например MCP-сервис или реестр
+зависимостей, используются через их собственные интерфейсы.
 
-## Async и наблюдения
+## Состояние, проверка и сброс
+
+```python
+with Client.from_env() as client:
+    task = client.tasks.get("YOUR_TASK_ID")
+    current = task.state()
+    print(current.status, current.missing_prerequisites)
+
+    if task.documentation().supports_grading:
+        verdict = task.grade()
+        print(verdict.grader_passed, verdict.grader_result, verdict.completed)
+
+    # При необходимости передайте task.grade({...}) полезную нагрузку проверки.
+    # Явный сброс через существующее поведение среды:
+    # task.reset()
+```
+
+У одного пользователя задачи одной среды разделяют состояние с браузером и
+другими скриптами. Получение нового handle или создание второго клиента не
+создаёт отдельную попытку. Сброс затрагивает общее состояние среды; сохранение
+зачётов и пререквизитов определяется её существующим поведением. Локальный
+контекстный менеджер закрывает только HTTP-соединения.
+
+Алгоритм атаки работает в вашем Python-процессе. Вызовы возвращают обычные ответы
+runtime без фоновых заданий SDK, checkpoint, fork или воспроизведения сценария.
+Вызовы одной среды выполняйте последовательно: параллельные кандидаты будут
+менять одно состояние. Async-клиент удобен для неблокирующего ожидания и работы
+с разными независимыми средами.
+
+## Async
 
 ```python
 import asyncio
@@ -144,32 +135,46 @@ from ai_security_school_sdk import AsyncClient
 
 async def main():
     async with AsyncClient.from_env() as client:
-        lab = await client.labs.get("YOUR_LAB_ID")
-        run = await lab.runs.create()
-        actions = await run.actions.list()
-        print(actions)
-        observation = await run.observation()
-        page = await run.events(after=0)
-        print(observation.state, observation.usage)
-        for event in page.events:
-            print(event.sequence, event.kind, event.data)
-        # Следующая порция: await run.events(after=page.next_cursor)
+        task = await client.tasks.get("YOUR_TASK_ID")
+        docs = await task.documentation()
+        print(docs.instructions)
+        result = await task.act({"message": "Привет"})  # Если разрешено схемой.
+        print(result.response)
+        print((await task.state()).state)
 
 
 asyncio.run(main())
 ```
 
-Все методы с сетевым вводом-выводом у `AsyncClient` вызываются через `await`.
-Конструкторы, `from_env()`, поля объектов и `job.result()` синхронные. Asyncio
-отмена локальной coroutine не отменяет серверное задание; сохраняйте `job_id`.
-Примеры: [первый эксперимент](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/first_experiment.py),
-[параллельный поиск](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/async_search.py),
-[этапы и fork](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/multistage.py).
+Методы async-ресурсов, включая `env.tasks.list()`, вызываются через `await`.
+Конструкторы, `from_env()`, поля `.info`, `.task_id`, `.instance_id` и `.title`
+синхронные. `task.documentation()` обновляет снимок `.info`; `task.state()`
+получает текущее серверное состояние. Дополнительные поля ответов сохраняются
+в моделях и доступны через `model_dump()`.
 
-Объекты содержат типизированный снимок в `.info`. Методы `refresh()` обновляют его;
-для актуального состояния сервера не полагайтесь на старый снимок. Аргументы и
-результаты конкретных действий — обычные JSON-объекты. Новые дополнительные поля
-общих серверных моделей допускаются для совместимости.
+Примеры: [документация и вызов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.2.0/examples/first_experiment.py),
+[последовательный поиск кандидатов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.2.0/examples/async_search.py),
+[связанные задачи одной среды](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.2.0/examples/multistage.py).
+
+## Ошибки и сетевые повторы
+
+- `APIError` содержит `code`, `message`, `status_code`, `details` и `usage`.
+  Для HTTP 401/403/404/409/429 используются `AuthenticationError`,
+  `PermissionDeniedError`, `NotFoundError`, `ConflictError`, `LimitExceededError`.
+- Успешный HTTP-ответ с `status="locked"` остаётся `RuntimeResponse`:
+  проверьте `status` и `missing_prerequisites` перед дальнейшими действиями.
+- `ActionValidationError` означает локальное несоответствие схеме,
+  `ProtocolError` — некорректный ответ или неподдерживаемую ссылку в схеме.
+- Автоматические повторы допускаются только для GET: при сетевых ошибках и
+  HTTP 429/502/503/504. Параметры клиента: `timeout=120`, `max_retries=2`,
+  `retry_backoff=0.25`; `max_retries=0` отключает повторы.
+- Действия, проверка и сброс **никогда не повторяются автоматически**.
+  При сетевом сбое `TransportError.may_have_executed` показывает, что изменение
+  могло уже выполниться. Сначала изучите `task.state()` и только затем решайте,
+  нужен ли повтор. Таймаут или отмена async-корутины не доказывают, что сервер
+  остановил исполнение.
+- Для удалённого сервера требуется HTTPS. HTTP доступен для локальной разработки;
+  перенаправления HTTP не выполняются, чтобы не передавать токен другому адресу.
 
 ## Разработка
 
@@ -181,9 +186,6 @@ uv run mypy src
 uv build
 ```
 
-Пакет не импортирует backend платформы. Тесты используют HTTPX MockTransport и
-проверяют общий HTTP-контракт sync/async клиентов без LLM-вызовов. API имеет базу
-`/api/learner/v1`; его версия не зависит от номера выпуска SDK.
-
-Публикация новых версий в PyPI описана в
-[PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).
+Пакет не импортирует backend платформы. Sync/async тестируются через HTTPX
+MockTransport против одного контракта `/api/agent-env`.
+Публикация описана в [PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).

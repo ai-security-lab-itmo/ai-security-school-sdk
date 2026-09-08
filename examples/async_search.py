@@ -1,10 +1,11 @@
-"""Compare candidate argument objects using independent runs and bounded concurrency.
+"""Try candidate argument objects sequentially against one shared environment.
 
-The JSON file is a list of objects matching the selected action's input schema.
-This example executes one action per candidate. More complex attack algorithms
-can make several explicit actions inside attempt() before submitting.
+The JSON file contains a list of objects matching the named action's input schema.
+By default candidates build on previous state. --reset-each explicitly resets the
+shared environment before every candidate, including the first one. Reset behavior
+is environment-specific and may preserve already earned completions.
 
-uv run python examples/async_search.py LAB_ID ACTION candidates.json --concurrency 2
+uv run python examples/async_search.py TASK_ID ACTION candidates.json --reset-each
 """
 
 import argparse
@@ -12,49 +13,48 @@ import asyncio
 import json
 from pathlib import Path
 
-from ai_security_school_sdk import AsyncClient, SDKError
+from ai_security_school_sdk import AsyncClient
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lab_id")
+    parser.add_argument("task_id")
     parser.add_argument("action")
     parser.add_argument("candidates", type=Path)
-    parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument("--reset-each", action="store_true")
     args = parser.parse_args()
-    if args.concurrency < 1:
-        parser.error("--concurrency must be positive")
     candidates = json.loads(args.candidates.read_text())
     if not isinstance(candidates, list) or not all(isinstance(c, dict) for c in candidates):
         parser.error("candidates.json must be a list of argument objects")
 
-    semaphore = asyncio.Semaphore(args.concurrency)
     async with AsyncClient.from_env() as client:
-        lab = await client.labs.get(args.lab_id)
-
-        async def attempt(index: int, arguments: dict) -> dict:
-            async with semaphore:
-                run = await lab.runs.create()
-                print(f"candidate={index} run_id={run.run_id}", flush=True)
-                try:
-                    job = await run.actions.start_call(args.action, arguments)
-                    print(f"candidate={index} job_id={job.job_id}", flush=True)
-                    response = await job.wait()
-                    submission = await run.start_submission()
-                    print(f"candidate={index} submission_job_id={submission.job_id}", flush=True)
-                    verdict = await submission.wait()
-                    return {
-                        "candidate": index,
-                        "run_id": run.run_id,
-                        "response": response.model_dump(mode="json"),
-                        "verdict": verdict.model_dump(mode="json"),
-                    }
-                except SDKError as error:
-                    # Preserve the run and job for inspection; do not blindly rerun.
-                    return {"candidate": index, "run_id": run.run_id, "error": str(error)}
-
-        results = await asyncio.gather(*(attempt(i, item) for i, item in enumerate(candidates)))
-        print(json.dumps(results, ensure_ascii=False, indent=2))
+        task = await client.tasks.get(args.task_id)
+        docs = await task.documentation()
+        for index, arguments in enumerate(candidates):
+            if args.reset_each:
+                await task.reset()
+            current = await task.state()
+            if current.status == "locked":
+                print(
+                    json.dumps(
+                        {"candidate": index, "state": current.model_dump(mode="json")},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    flush=True,
+                )
+                break
+            # Do not gather candidates: all calls below change the same user state.
+            response = await task.actions.call(args.action, arguments)
+            result = {"candidate": index, "response": response.model_dump(mode="json")}
+            if response.status == "locked":
+                print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+                break
+            if docs.supports_grading:
+                verdict = await task.grade()
+                result["verdict"] = verdict.model_dump(mode="json")
+            print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+            # Exceptions stop the search. Inspect shared state before retrying.
 
 
 if __name__ == "__main__":

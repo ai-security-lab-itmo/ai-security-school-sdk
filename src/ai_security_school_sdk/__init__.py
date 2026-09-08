@@ -1,4 +1,4 @@
-"""AI Security School learner SDK: explicit student actions, isolated experiments."""
+"""AI Security School SDK: documentation and actions for existing agent environments."""
 
 from .async_client import AsyncClient
 from .client import Client
@@ -8,32 +8,22 @@ from .errors import (
     AuthenticationError,
     ConfigurationError,
     ConflictError,
-    JobCancelledError,
-    JobInterruptedError,
-    JobTimeoutError,
     LimitExceededError,
     NotFoundError,
     PermissionDeniedError,
     ProtocolError,
     SDKError,
-    StageLockedError,
     TransportError,
 )
 from .models import (
     ActionDescriptor,
-    CallResult,
-    Checkpoint,
-    Event,
-    EventPage,
-    Job,
-    Lab,
-    Observation,
-    Run,
-    SubmissionResult,
-    Task,
+    InstanceDocumentation,
+    RuntimeResponse,
+    TaskDocumentation,
+    TaskSummary,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "APIError",
@@ -41,27 +31,17 @@ __all__ = [
     "ActionValidationError",
     "AsyncClient",
     "AuthenticationError",
-    "CallResult",
-    "Checkpoint",
     "Client",
     "ConfigurationError",
     "ConflictError",
-    "Event",
-    "EventPage",
-    "Job",
-    "JobCancelledError",
-    "JobInterruptedError",
-    "JobTimeoutError",
-    "Lab",
+    "InstanceDocumentation",
     "LimitExceededError",
     "NotFoundError",
-    "Observation",
     "PermissionDeniedError",
     "ProtocolError",
-    "Run",
+    "RuntimeResponse",
     "SDKError",
-    "StageLockedError",
-    "SubmissionResult",
-    "Task",
+    "TaskDocumentation",
+    "TaskSummary",
     "TransportError",
 ]

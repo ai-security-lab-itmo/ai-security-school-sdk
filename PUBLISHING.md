@@ -18,7 +18,9 @@ Run `uv lock` to synchronize the root package version in `uv.lock`, and update
 the pinned installation example and example links in `README.md`.
 Keep stable tags in exact `vX.Y.Z` form and never move an existing release tag.
 For a GitHub release, attach the checked wheel/sdist and document the release
-changes. The first GitHub release is `v0.1.0`.
+changes. Release 0.2.0 replaces the separate learner-labs API with the shared
+`/api/agent-env` API. Deploy the matching platform endpoints before publishing it;
+0.1.x scripts require migration to environments and tasks.
 
 PyPI stores the README with each release; editing it in GitHub does not update
 the package page. Publish a new patch version for README-only corrections.
@@ -26,13 +28,14 @@ the package page. Publish a new patch version for README-only corrections.
 Users can install that GitHub version without a PyPI account:
 
 ```sh
-python -m pip install "ai-security-school-sdk @ https://github.com/ai-security-lab-itmo/ai-security-school-sdk/archive/refs/tags/v0.1.0.tar.gz"
+python -m pip install "ai-security-school-sdk @ https://github.com/ai-security-lab-itmo/ai-security-school-sdk/archive/refs/tags/v0.2.0.tar.gz"
 ```
 
 ## One-time PyPI setup
 
-PyPI publishing is prepared but must be configured by the PyPI project owner
-before running `publish.yml`. No PyPI API token or password is needed.
+The existing project uses GitHub Trusted Publishing. If transferring or
+recreating it, the PyPI project owner must configure the publisher before
+running `publish.yml`. No PyPI API token or password is needed.
 
 For the first upload, add a **pending publisher** under the PyPI account's
 [Publishing settings](https://pypi.org/manage/account/publishing/), selecting
@@ -65,11 +68,11 @@ tag**, with the same tag as the input; dispatching from `main` is rejected:
 ```sh
 gh workflow run publish.yml \
   --repo ai-security-lab-itmo/ai-security-school-sdk \
-  --ref v0.1.0 \
-  -f tag=v0.1.0
+  --ref v0.2.0 \
+  -f tag=v0.2.0
 ```
 
-The workflow resolves `refs/tags/v0.1.0` to its commit SHA, checks it against the
+The workflow resolves `refs/tags/v0.2.0` to its commit SHA, checks it against the
 dispatch commit, and passes that SHA to the isolated CI/build job. The package
 name and version must match the release tag. The publish job receives only the
 checked artifact, has `id-token: write` without repository write permissions, and
@@ -81,13 +84,13 @@ Watch the workflow through completion and verify the published package in a fres
 virtual environment:
 
 ```sh
-python -m pip install --index-url https://pypi.org/simple ai-security-school-sdk==0.1.0
+python -m pip install --index-url https://pypi.org/simple ai-security-school-sdk==0.2.0
 python -m pip check
 python -c "from ai_security_school_sdk import Client, AsyncClient"
 ```
 
 Only after this upload succeeds does `pip install ai-security-school-sdk` resolve
-this project from PyPI. PyPI publication is permanent for a given artifact name;
+the new version from PyPI. PyPI publication is permanent for a given artifact name;
 release changes under a new version. The workflow intentionally fails on existing
 files instead of skipping them. An interrupted upload should be investigated
 before retrying.

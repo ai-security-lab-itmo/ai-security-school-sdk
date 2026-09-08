@@ -1,11 +1,10 @@
-"""Execute an explicit sequence of action recipes, checkpointing each accepted stage.
+"""Execute explicit task payloads in one environment with shared state.
 
-recipe.json contains an array of stages. Each stage is a list of
-{"action": "ACTION_NAME", "arguments": {...}} objects from the manifest.
-For recipes needing dynamic object IDs, replace this simple loop with Python
-that reads result.data and supplies those IDs to subsequent actions.
+recipe.json is an array of {"task_id": "...", "payloads": [{...}, {...}]} objects.
+Payloads use each task's action_payload_schema. For dynamic IDs, replace this loop
+with Python that reads response.response and passes IDs to the next action.
 
-uv run python examples/multistage.py LAB_ID recipe.json
+uv run python examples/multistage.py INSTANCE_ID recipe.json
 """
 
 import argparse
@@ -17,28 +16,27 @@ from ai_security_school_sdk import Client
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("lab_id")
+    parser.add_argument("instance_id")
     parser.add_argument("recipe", type=Path)
     args = parser.parse_args()
     stages = json.loads(args.recipe.read_text())
     with Client.from_env() as client:
-        lab = client.labs.get(args.lab_id)
-        run = lab.runs.create()
-        for index, actions in enumerate(stages):
-            print("run_id:", run.run_id, "task_id:", run.task_id, flush=True)
-            for action in actions:
-                response = run.actions.call(action["action"], action["arguments"])
-                print(response.model_dump_json())
-            verdict = run.submit()
-            print(verdict.model_dump_json())
-            if not verdict.passed:
-                print("Stage was not accepted; inspect this run before trying another candidate.")
+        env = client.envs.get(args.instance_id)
+        for stage in stages:
+            task = env.tasks.get(stage["task_id"])
+            state = task.state()
+            if state.status == "locked":
+                print(state.model_dump_json(indent=2))
                 break
-            checkpoint = run.checkpoint()
-            print("checkpoint_id:", checkpoint.checkpoint_id, flush=True)
-            if index + 1 < len(stages):
-                run = checkpoint.fork()
-                run.advance()
+            for payload in stage["payloads"]:
+                response = task.act(payload)
+                print(response.model_dump_json(indent=2), flush=True)
+            if task.documentation().supports_grading:
+                verdict = task.grade()
+                print(verdict.model_dump_json(indent=2), flush=True)
+                if not verdict.grader_passed:
+                    break
+            # Next task uses the same state. The server enforces prerequisites.
 
 
 if __name__ == "__main__":

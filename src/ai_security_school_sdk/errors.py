@@ -1,4 +1,4 @@
-"""Errors never include authentication headers or request bodies."""
+"""SDK failures omit authentication headers and locally supplied payloads."""
 
 from typing import Any
 
@@ -12,11 +12,11 @@ class ConfigurationError(SDKError, ValueError):
 
 
 class ProtocolError(SDKError):
-    """The server returned an invalid v1 envelope or unsupported JSON schema."""
+    """The server returned an invalid response or unsupported JSON schema."""
 
 
 class ActionValidationError(SDKError, ValueError):
-    """Arguments do not satisfy the current stage's public action schema."""
+    """Arguments do not satisfy the task's documented action schema."""
 
     def __init__(self, message: str, *, path: list[str | int] | None = None) -> None:
         super().__init__(message)
@@ -29,16 +29,16 @@ class APIError(SDKError):
         code: str,
         message: str,
         *,
-        status_code: int | None = None,
+        status_code: int,
         details: dict[str, Any] | None = None,
-        job_id: str | None = None,
     ) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
         self.status_code = status_code
         self.details = details or {}
-        self.job_id = job_id
+        usage = self.details.get("usage")
+        self.usage: dict[str, Any] | None = usage if isinstance(usage, dict) else None
 
 
 class AuthenticationError(APIError):
@@ -57,65 +57,33 @@ class ConflictError(APIError):
     pass
 
 
-class StageLockedError(ConflictError):
-    pass
-
-
 class LimitExceededError(APIError):
     pass
 
 
-class JobCancelledError(APIError):
-    pass
-
-
-class JobInterruptedError(APIError):
-    pass
-
-
 class TransportError(SDKError):
-    """No definitive response; retry a mutation with this same idempotency key."""
+    """No definitive response was received; a mutation may already have executed."""
 
-    def __init__(self, message: str, *, idempotency_key: str | None = None) -> None:
+    def __init__(self, *, may_have_executed: bool) -> None:
+        message = "Unable to obtain a definitive server response."
+        if may_have_executed:
+            message += " The action may have executed; inspect task.state() before retrying."
         super().__init__(message)
-        self.idempotency_key = idempotency_key
-
-
-class JobTimeoutError(SDKError, TimeoutError):
-    """Polling stopped locally; the durable job remains available on the server."""
-
-    def __init__(self, job_id: str, timeout: float) -> None:
-        super().__init__(
-            f"Job {job_id} did not finish within {timeout:g}s; "
-            "resume with client.jobs.get(job_id).wait()."
-        )
-        self.job_id = job_id
-        self.timeout = timeout
+        self.may_have_executed = may_have_executed
 
 
 def api_error(
     code: str,
     message: str,
     *,
-    status_code: int | None = None,
+    status_code: int,
     details: dict[str, Any] | None = None,
-    job_id: str | None = None,
 ) -> APIError:
-    cls: type[APIError] = APIError
-    if code in {"stage_locked", "stage_not_passed", "prerequisite_not_met"}:
-        cls = StageLockedError
-    elif code in {"job_cancelled", "cancelled"}:
-        cls = JobCancelledError
-    elif code in {"job_interrupted", "interrupted", "configuration_changed"}:
-        cls = JobInterruptedError
-    elif status_code == 401 or code in {"unauthorized", "invalid_token", "token_expired"}:
-        cls = AuthenticationError
-    elif status_code == 403 or code in {"forbidden", "action_not_allowed"}:
-        cls = PermissionDeniedError
-    elif status_code == 404:
-        cls = NotFoundError
-    elif status_code == 409 or code in {"run_busy", "task_changed", "idempotency_conflict"}:
-        cls = ConflictError
-    elif status_code == 429 or code in {"budget_exceeded", "limit_exceeded", "rate_limited"}:
-        cls = LimitExceededError
-    return cls(code, message, status_code=status_code, details=details, job_id=job_id)
+    cls: type[APIError] = {
+        401: AuthenticationError,
+        403: PermissionDeniedError,
+        404: NotFoundError,
+        409: ConflictError,
+        429: LimitExceededError,
+    }.get(status_code, APIError)
+    return cls(code, message, status_code=status_code, details=details)

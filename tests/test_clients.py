@@ -1,8 +1,9 @@
-"""Both clients are exercised against the same stateful HTTP contract fixture."""
+"""The same stateful agent-env contract is exercised through both client variants."""
 
 import inspect
 import json
 from copy import deepcopy
+from importlib.metadata import version
 from typing import Any
 
 import httpx
@@ -13,23 +14,19 @@ from ai_security_school_sdk import (
     APIError,
     AsyncClient,
     AuthenticationError,
-    CallResult,
     Client,
     ConfigurationError,
     ConflictError,
-    JobCancelledError,
-    JobInterruptedError,
-    JobTimeoutError,
     LimitExceededError,
     NotFoundError,
     PermissionDeniedError,
     ProtocolError,
-    StageLockedError,
-    SubmissionResult,
+    RuntimeResponse,
+    TaskDocumentation,
     TransportError,
+    __version__,
 )
-
-NOW = "2026-09-07T12:00:00Z"
+from ai_security_school_sdk._http import retry_delay
 
 
 async def invoke(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -37,511 +34,539 @@ async def invoke(fn: Any, *args: Any, **kwargs: Any) -> Any:
     return await result if inspect.isawaitable(result) else result
 
 
-class LearnerServer:
+class AgentEnvServer:
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
-        self.runs: dict[str, dict[str, Any]] = {}
-        self.jobs: dict[str, dict[str, Any]] = {}
-        self.checkpoints: dict[str, dict[str, Any]] = {}
-        self.idempotency: dict[str, tuple[bytes, dict[str, Any]]] = {}
-        self.hold_jobs = False
-        self.extra_schema: dict[str, Any] | None = None
+        self.messages: list[str] = []
+        self.graded = False
+        self.hook: Any = None
+        self.docs = {
+            "task_named": self.documentation("task_named", named=True),
+            "task_chat": self.documentation("task_chat", named=False),
+        }
 
-    def action(self, stage: int) -> dict[str, Any]:
+    @staticmethod
+    def documentation(task_id: str, *, named: bool) -> dict[str, Any]:
+        arguments = {
+            "type": "object",
+            "properties": {"message": {"type": "string", "minLength": 1}},
+            "required": ["message"],
+            "additionalProperties": False,
+        }
+        payload = deepcopy(arguments)
+        if named:
+            payload["properties"]["action"] = {"const": "send_message"}
+            payload["required"].append("action")
         return {
-            "name": "add_document" if stage == 0 else "send_message",
-            "description": "An explicit learner action",
-            "input_schema": self.extra_schema
-            or {
-                "type": "object",
-                "properties": {"text": {"type": "string", "minLength": 1}},
-                "required": ["text"],
-                "additionalProperties": False,
-            },
-            "output_schema": {"type": "object"},
-            "examples": [{"text": "hello"}],
-            "version": "1",
-            "future_field": True,
+            "task_id": task_id,
+            "instance_id": "env_one",
+            "agent_env_ref": "existing_agent",
+            "ctf_ref": task_id.removeprefix("task_"),
+            "title": task_id,
+            "description": "Existing CTF",
+            "instructions": "Inspect the agent",
+            "action_payload_schema": payload,
+            "action_payload_examples": [
+                {"action": "send_message", "message": "Hello"} if named else {"message": "Hello"}
+            ],
+            "actions": [
+                {
+                    "name": "send_message",
+                    "description": "Send a message to the agent",
+                    "input_schema": arguments,
+                    "examples": [{"message": "Hello"}],
+                }
+            ]
+            if named
+            else [],
+            "supports_grading": True,
+            "future_documentation": "preserved",
         }
 
-    def task(self, stage: int) -> dict[str, Any]:
+    def instance(self) -> dict[str, Any]:
         return {
-            "task_id": f"task_{stage}",
-            "lab_id": "lab_a",
-            "title": f"Stage {stage}",
-            "instructions": "Investigate",
-            "actions": [self.action(stage)],
+            "instance_id": "env_one",
+            "agent_env_ref": "existing_agent",
+            "title": "Existing agent",
+            "description": "Tasks share the user's state",
+            "tasks": [
+                {key: doc[key] for key in ("task_id", "ctf_ref", "title")}
+                for doc in self.docs.values()
+            ],
         }
 
-    def lab(self) -> dict[str, Any]:
+    def state(self) -> dict[str, Any]:
         return {
-            "lab_id": "lab_a",
-            "title": "Documents",
-            "description": "Training lab",
-            "stages": [self.task(0), self.task(1)],
-            "limits": {"concurrency": 2},
+            "status": "ok",
+            "state": {"messages": list(self.messages)},
+            "completed": self.graded,
+            "usage": {"requests": len(self.messages)},
+            "future_runtime_field": {"retained": True},
         }
-
-    def create_run(self) -> dict[str, Any]:
-        run = {
-            "run_id": f"run_{len(self.runs)}",
-            "lab_id": "lab_a",
-            "task_id": "task_0",
-            "stage_index": 0,
-            "status": "idle",
-            "revision": 0,
-            "stage_passed": False,
-            "created_at": NOW,
-            "parent_checkpoint_id": None,
-            "future_field": "ignored",
-        }
-        self.runs[run["run_id"]] = run
-        return run
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         assert request.headers["Authorization"] == "Bearer test-token"
-        assert request.url.path.startswith("/api/learner/v1/")
-        route = request.url.path.removeprefix("/api/learner/v1/")
-        key = request.headers.get("Idempotency-Key")
-        if request.method == "POST":
-            assert key
-            fingerprint = route.encode() + request.content
-            if key in self.idempotency:
-                old_fingerprint, result = self.idempotency[key]
-                if fingerprint != old_fingerprint:
-                    return httpx.Response(
-                        409,
-                        json={
-                            "error": {
-                                "code": "idempotency_conflict",
-                                "message": "Different body",
-                                "details": {},
-                            }
-                        },
-                    )
-                return httpx.Response(200, json=result)
-        result = deepcopy(self.dispatch(request, route))
-        if key:
-            self.idempotency[key] = (route.encode() + request.content, result)
-        return httpx.Response(200, json=result)
-
-    def dispatch(self, request: httpx.Request, route: str) -> dict[str, Any]:
-        if route == "labs":
-            return {"labs": [self.lab()]}
-        if route == "labs/lab_a":
-            return self.lab()
-        if route.startswith("tasks/"):
-            return self.task(int(route[-1]))
-        if route == "labs/lab_a/runs":
-            return self.create_run()
-        if route == "runs":
-            assert request.url.params["lab_id"] == "lab_a"
-            return {"runs": list(self.runs.values())}
-        if route.startswith("checkpoints/"):
-            checkpoint = self.checkpoints[route.split("/")[1]]
-            run = self.create_run()
-            run.update(
-                {
-                    "parent_checkpoint_id": checkpoint["checkpoint_id"],
-                    "task_id": checkpoint["task_id"],
-                    "revision": checkpoint["revision"],
-                }
+        assert request.headers["User-Agent"] == f"ai-security-school-sdk/{__version__}"
+        assert request.url.path.startswith("/api/agent-env/")
+        assert "Idempotency-Key" not in request.headers
+        assert "session_id" not in request.url.params
+        if self.hook is not None:
+            result = self.hook(request)
+            if result is not None:
+                return result
+        route = request.url.path.removeprefix("/api/agent-env/")
+        if route == "instances":
+            assert request.method == "GET"
+            return httpx.Response(200, json={"instances": [self.instance()]})
+        if route == "instances/env_one":
+            return httpx.Response(200, json=self.instance())
+        if route.startswith("tasks/") and route.endswith("/documentation"):
+            assert request.method == "GET"
+            return httpx.Response(200, json=self.docs[route.split("/")[1]])
+        if route == "state":
+            assert request.method == "GET"
+            assert request.url.params["task_id"] in self.docs
+            return httpx.Response(200, json=self.state())
+        assert request.method == "POST"
+        body = json.loads(request.content)
+        assert "session_id" not in body
+        assert body["task_id"] in self.docs
+        if route == "action":
+            assert set(body) == {"task_id", "action_payload"}
+            self.messages.append(body["action_payload"]["message"])
+            return httpx.Response(200, json={**self.state(), "response": {"answer": "Received"}})
+        if route == "grade":
+            assert set(body) == {"task_id", "payload"}
+            self.graded = bool(self.messages)
+            return httpx.Response(
+                200,
+                json={
+                    **self.state(),
+                    "grader_passed": self.graded,
+                    "grader_result": {"reason": "Checked shared state"},
+                },
             )
-            return run
-        if route.startswith("jobs/"):
-            job = self.jobs[route.split("/")[1]]
-            if route.endswith("/cancel"):
-                job["status"] = "cancelled"
-            elif not self.hold_jobs and job["status"] == "queued":
-                job["status"] = "succeeded"
-            return job
-        parts = route.split("/")
-        run = self.runs[parts[1]]
-        resource = parts[2] if len(parts) > 2 else ""
-        if resource == "actions":
-            return {"task_id": run["task_id"], "actions": [self.action(run["stage_index"])]}
-        if resource == "observation":
-            return {"task_id": run["task_id"], "state": {"document_count": 1}, "usage": {}}
-        if resource == "events":
-            assert int(request.url.params["after"]) >= 0
-            return {
-                "events": [
-                    {
-                        "sequence": 1,
-                        "kind": "document_added",
-                        "task_id": run["task_id"],
-                        "data": {"document_id": "document_1"},
-                        "created_at": NOW,
-                    }
-                ],
-                "next_cursor": 1,
-            }
-        if resource == "checkpoints":
-            checkpoint = {
-                "checkpoint_id": f"checkpoint_{len(self.checkpoints)}",
-                "run_id": run["run_id"],
-                "lab_id": run["lab_id"],
-                "task_id": run["task_id"],
-                "revision": run["revision"],
-                "created_at": NOW,
-            }
-            self.checkpoints[checkpoint["checkpoint_id"]] = checkpoint
-            return checkpoint
-        if resource in {"calls", "submissions"}:
-            run["revision"] += 1
-            kind = "call" if resource == "calls" else "submission"
-            if kind == "call":
-                body = json.loads(request.content)
-                assert body["expected_task_id"] == run["task_id"]
-                result = {
-                    "data": {"document_id": "document_1"},
-                    "state_revision": run["revision"],
-                    "usage": {"requests": 1},
-                }
-            else:
-                run["stage_passed"] = True
-                result = {
-                    "passed": True,
-                    "success_count": 3,
-                    "case_count": 3,
-                    "success_rate": 1.0,
-                    "training_passed": True,
-                    "task_id": run["task_id"],
-                }
-            job = {
-                "job_id": f"job_{len(self.jobs)}",
-                "run_id": run["run_id"],
-                "kind": kind,
-                "status": "queued",
-                "result": result,
-                "error": None,
-                "created_at": NOW,
-            }
-            self.jobs[job["job_id"]] = job
-            return job
-        if resource == "advance":
-            run.update({"task_id": "task_1", "stage_index": 1, "stage_passed": False})
-        if resource == "close":
-            run["status"] = "closed"
-        return run
+        if route == "reset":
+            assert set(body) == {"task_id"}
+            self.messages.clear()
+            return httpx.Response(200, json={**self.state(), "reset": True})
+        raise AssertionError(f"Unexpected route: {route}")
 
 
 @pytest.fixture(params=[Client, AsyncClient], ids=["sync", "async"])
-async def connection(request: pytest.FixtureRequest) -> Any:
-    server = LearnerServer()
+async def setup(request: Any) -> Any:
+    server = AgentEnvServer()
     client = request.param(
-        "test-token",
-        base_url="https://school.example",
-        transport=httpx.MockTransport(server.handle),
-        retry_backoff=0,
+        "test-token", transport=httpx.MockTransport(server.handle), retry_backoff=0
     )
     yield client, server
     await invoke(client.close)
 
 
-async def setup_run(client: Any) -> Any:
-    lab = await invoke(client.labs.get, "lab_a")
-    return await invoke(lab.runs.create)
-
-
-async def test_complete_multistage_lifecycle(connection: Any) -> None:
-    client, server = connection
-    labs = await invoke(client.labs.list)
-    assert labs[0].title == "Documents"
-    assert (await invoke(client.tasks.get, "task_0")).actions[0].name == "add_document"
-    run = await invoke(labs[0].runs.create)
-    assert (await invoke(labs[0].runs.list))[0].run_id == run.run_id
-    assert (await invoke(client.runs.get, run.run_id)).task_id == "task_0"
-    assert (await invoke(run.actions.list))[0].name == "add_document"
-    result = await invoke(run.actions.call, "add_document", {"text": "candidate"})
-    assert isinstance(result, CallResult)
-    assert result.data["document_id"] == "document_1"
-    assert run.revision == 1
-    assert (await invoke(run.observation)).state == {"document_count": 1}
-    assert (await invoke(run.events, after=0)).next_cursor == 1
-    checkpoint = await invoke(run.checkpoint)
-    fork = await invoke(checkpoint.fork)
-    assert fork.run_id != run.run_id
-    assert fork.info.parent_checkpoint_id == checkpoint.checkpoint_id
-    verdict = await invoke(run.submit)
-    assert isinstance(verdict, SubmissionResult) and verdict.passed
-    assert run.stage_passed
-    assert await invoke(run.advance) is run
-    assert run.task_id == "task_1"
-    assert (await invoke(run.actions.list))[0].name == "send_message"
-    await invoke(run.actions.call, "send_message", {"text": "continue"})
-    assert await invoke(run.refresh) is run
-    await invoke(fork.close)
-    assert fork.status == "closed"
-    assert server.runs[run.run_id]["status"] == "idle"
-    assert all("Idempotency-Key" in r.headers for r in server.requests if r.method == "POST")
-
-
-@pytest.mark.parametrize(
-    "arguments", [{"text": ""}, {"text": 12}, {}, {"text": "ok", "owner": "x"}]
-)
-async def test_invalid_arguments_never_dispatch(connection: Any, arguments: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    with pytest.raises(ActionValidationError):
-        await invoke(run.actions.call, "add_document", arguments)
-    assert not server.jobs
-
-
-async def test_internal_tools_not_callable(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    with pytest.raises(ActionValidationError):
-        await invoke(run.actions.call, "refund.issue", {})
-    assert not server.jobs
-
-
-async def test_manifest_stage_change_requires_explicit_refresh(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    server.runs[run.run_id].update({"task_id": "task_1", "stage_index": 1})
-    with pytest.raises(ConflictError, match="task_changed"):
-        await invoke(run.actions.call, "add_document", {"text": "old request"})
-    assert not server.jobs
-    await invoke(run.refresh)
-    await invoke(run.actions.call, "send_message", {"text": "new request"})
-
-
-@pytest.mark.parametrize("reference", ["https://attacker.example/schema", "other.json"])
-async def test_remote_schema_references_are_rejected(connection: Any, reference: str) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    server.extra_schema = {"$ref": reference}
-    with pytest.raises(ProtocolError, match="local fragment"):
-        await invoke(run.actions.call, "add_document", {})
-    assert not server.jobs
-    assert all(r.url.host == "school.example" for r in server.requests)
-
-
-async def test_local_schema_references_work(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    server.extra_schema = {
-        "$defs": {"text": {"type": "string"}},
-        "type": "object",
-        "properties": {"text": {"$ref": "#/$defs/text"}},
-        "required": ["text"],
+async def test_discovery_and_existing_tasks_share_runtime_state(setup: Any) -> None:
+    client, server = setup
+    envs = await invoke(client.envs.list)
+    assert [(env.instance_id, env.title) for env in envs] == [("env_one", "Existing agent")]
+    env = await invoke(client.envs.get, "env_one")
+    before_list = len(server.requests)
+    tasks = await invoke(env.tasks.list)
+    assert [task.task_id for task in tasks] == ["task_named", "task_chat"]
+    assert len(server.requests) == before_list  # Summaries do not load every task's schema.
+    named = await invoke(env.tasks.get, "task_named")
+    docs = await invoke(named.documentation)
+    assert isinstance(docs, TaskDocumentation)
+    assert docs.model_dump()["future_documentation"] == "preserved"
+    assert (await invoke(named.actions.list))[0].examples == [{"message": "Hello"}]
+    result = await invoke(named.actions.call, "send_message", {"message": "First"})
+    assert isinstance(result, RuntimeResponse)
+    assert result.response == {"answer": "Received"}
+    action_request = server.requests[-1]
+    assert json.loads(action_request.content) == {
+        "task_id": "task_named",
+        "action_payload": {"action": "send_message", "message": "First"},
     }
-    await invoke(run.actions.call, "add_document", {"text": "ok"})
+    chat = await invoke(client.tasks.get, "task_chat")
+    assert await invoke(chat.actions.list) == []
+    assert (await invoke(chat.state)).state == {"messages": ["First"]}
+    await invoke(chat.act, {"message": "Second"})
+    verdict = await invoke(chat.grade)
+    assert verdict.grader_passed is True
+    assert verdict.completed is True
+    assert json.loads(server.requests[-1].content)["payload"] == {}
+    result = await invoke(named.state)
+    assert result.state == {"messages": ["First", "Second"]}
+    assert result.model_dump()["future_runtime_field"] == {"retained": True}
+    await invoke(named.reset)
+    assert (await invoke(chat.state)).state == {"messages": []}
+    assert (await invoke(chat.state)).completed is True  # Existing reset policy retains credit.
 
 
-async def test_timeout_retains_job_and_resume_never_resubmits(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    server.hold_jobs = True
-    job = await invoke(run.actions.start_call, "add_document", {"text": "candidate"})
-    with pytest.raises(JobTimeoutError) as error:
-        await invoke(job.wait, timeout=0.003, poll_interval=0.001)
-    assert error.value.job_id == job.job_id
-    assert len(server.jobs) == 1
-    server.hold_jobs = False
-    resumed = await invoke(client.jobs.get, job.job_id)
-    assert isinstance(await invoke(resumed.wait), CallResult)
-    assert len(server.jobs) == 1
-
-
-async def test_cancel_does_not_resubmit(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    server.hold_jobs = True
-    job = await invoke(run.start_submission)
-    await invoke(job.cancel)
-    with pytest.raises(JobCancelledError) as error:
-        await invoke(job.wait)
-    assert error.value.job_id == job.job_id
-    assert len(server.jobs) == 1
-
-
-async def test_interrupted_job_is_distinct_from_failed_attack(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    job = await invoke(run.start_submission)
-    server.jobs[job.job_id].update(
-        {
-            "status": "interrupted",
-            "error": {
-                "code": "job_interrupted",
-                "message": "Worker lost",
-                "details": {},
-            },
-        }
-    )
-    with pytest.raises(JobInterruptedError):
-        await invoke(job.wait)
-
-
-async def test_idempotent_calls_reuse_original_job_and_conflict_on_different_body(
-    connection: Any,
-) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    first = await invoke(
-        run.actions.start_call, "add_document", {"text": "a"}, idempotency_key="fixed-key"
-    )
-    second = await invoke(
-        run.actions.start_call, "add_document", {"text": "a"}, idempotency_key="fixed-key"
-    )
-    assert first.job_id == second.job_id and len(server.jobs) == 1
-    with pytest.raises(ConflictError):
-        await invoke(
-            run.actions.start_call, "add_document", {"text": "b"}, idempotency_key="fixed-key"
-        )
-
-
-async def test_invalid_wait_options_do_not_start_job(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
+async def test_lazy_task_handles_load_current_documentation(setup: Any) -> None:
+    client, server = setup
+    env = await invoke(client.envs.get, "env_one")
+    task = (await invoke(env.tasks.list))[0]
+    assert not isinstance(task.info, TaskDocumentation)
+    doc = await invoke(task.documentation)
+    assert task.info is doc
+    server.docs["task_named"]["instructions"] = "Updated by author"
+    assert (await invoke(task.documentation)).instructions == "Updated by author"
     with pytest.raises(ConfigurationError):
-        await invoke(run.actions.call, "add_document", {"text": "a"}, poll_interval=-1)
-    with pytest.raises(ConfigurationError):
-        await invoke(run.submit, timeout=float("inf"))
-    assert not server.jobs
+        await invoke(env.tasks.get, "other_task")
 
 
-@pytest.mark.parametrize("client_type", [Client, AsyncClient])
-async def test_transport_retry_after_accepted_post_uses_same_key(client_type: Any) -> None:
-    server = LearnerServer()
-    failed = False
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal failed
-        response = server.handle(request)
-        if request.url.path.endswith("/calls") and not failed:
-            failed = True
-            raise httpx.ReadError("response lost", request=request)
-        return response
-
-    client = client_type("test-token", transport=httpx.MockTransport(handler), retry_backoff=0)
-    try:
-        run = await setup_run(client)
-        await invoke(run.actions.call, "add_document", {"text": "a"})
-        calls = [r for r in server.requests if r.url.path.endswith("/calls")]
-        assert len(calls) == 2
-        assert calls[0].headers["Idempotency-Key"] == calls[1].headers["Idempotency-Key"]
-        assert calls[0].content == calls[1].content
-        assert len(server.jobs) == 1
-    finally:
-        await invoke(client.close)
-
-
-@pytest.mark.parametrize("client_type", [Client, AsyncClient])
-async def test_exhausted_transport_error_exposes_reusable_mutation_key(client_type: Any) -> None:
-    server = LearnerServer()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            raise httpx.ConnectError("unreachable", request=request)
-        return server.handle(request)
-
-    client = client_type("test-token", transport=httpx.MockTransport(handler), retry_backoff=0)
-    try:
-        lab = await invoke(client.labs.get, "lab_a")
-        with pytest.raises(TransportError) as error:
-            await invoke(lab.runs.create)
-        assert error.value.idempotency_key
-        assert "test-token" not in str(error.value)
-    finally:
-        await invoke(client.close)
+async def test_call_uses_latest_documentation_and_never_guesses_hidden_actions(setup: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_named")
+    server.docs["task_named"]["actions"] = []
+    for name in ("send_message", "internal_agent_tool"):
+        with pytest.raises(ActionValidationError, match="not documented"):
+            await invoke(task.actions.call, name, {"message": "Hello"})
+    assert all(req.method == "GET" for req in server.requests)
+    # The native schema can still be used without inventing an action descriptor.
+    await invoke(task.act, {"action": "send_message", "message": "Hello"})
 
 
 @pytest.mark.parametrize(
-    "status,code,error_type",
+    "arguments", [{}, {"message": ""}, {"message": 4}, {"action": "other", "message": "x"}]
+)
+async def test_invalid_named_arguments_never_reach_runtime(setup: Any, arguments: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_named")
+    with pytest.raises(ActionValidationError):
+        await invoke(task.actions.call, "send_message", arguments)
+    assert all(req.method == "GET" for req in server.requests)
+
+
+async def test_convenience_call_validates_full_native_schema_too(setup: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_named")
+    server.docs["task_named"]["action_payload_schema"]["required"].append("another_required_field")
+    with pytest.raises(ActionValidationError):
+        await invoke(task.actions.call, "send_message", {"message": "Hello"})
+    assert not server.messages
+
+
+@pytest.mark.parametrize(
+    "payload", [[], {"message": float("nan")}, {"message": object()}, {"message": ""}]
+)
+async def test_native_payload_validation_and_redacted_errors(setup: Any, payload: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+    with pytest.raises(ActionValidationError):
+        await invoke(task.act, payload)
+    with pytest.raises(ActionValidationError) as error:
+        await invoke(task.act, {"message": "", "secret": "PRIVATE_PAYLOAD"})
+    assert "PRIVATE_PAYLOAD" not in str(error.value)
+    assert not server.messages
+
+
+@pytest.mark.parametrize(
+    "schema",
     [
-        (401, "invalid_token", AuthenticationError),
-        (403, "forbidden", PermissionDeniedError),
-        (404, "not_found", NotFoundError),
-        (409, "stage_locked", StageLockedError),
-        (409, "run_busy", ConflictError),
-        (429, "budget_exceeded", LimitExceededError),
-        (422, "invalid_arguments", APIError),
+        {"$ref": "https://example.com/private-schema"},
+        {"$dynamicRef": "file:///etc/passwd"},
+        {"type": "object", "properties": {"message": {"$ref": "other.json"}}},
+        {"$ref": 123},
+        {"$ref": "#/missing"},
+        {"type": "invalid-type"},
     ],
 )
-@pytest.mark.parametrize("client_type", [Client, AsyncClient])
-async def test_typed_http_errors(client_type: Any, status: int, code: str, error_type: Any) -> None:
-    client = client_type(
-        "test-token",
-        max_retries=0,
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                status,
-                json={
-                    "error": {
-                        "code": code,
-                        "message": "Example error",
-                        "details": {"retry": False},
-                    }
-                },
-            )
-        ),
+async def test_external_invalid_and_unresolvable_schema_references_are_blocked(
+    setup: Any, schema: Any
+) -> None:
+    client, server = setup
+    server.docs["task_chat"]["action_payload_schema"] = schema
+    task = await invoke(client.tasks.get, "task_chat")
+    with pytest.raises(ProtocolError):
+        await invoke(task.act, {"message": "Hello"})
+    assert not server.messages
+    assert all(req.url.host == "plgn.aisecschool.ru" for req in server.requests)
+
+
+async def test_local_schema_references_are_supported(setup: Any) -> None:
+    client, server = setup
+    server.docs["task_chat"]["action_payload_schema"] = {
+        "$defs": {"text": {"type": "string", "minLength": 1}},
+        "type": "object",
+        "properties": {"message": {"$ref": "#/$defs/text"}},
+        "required": ["message"],
+    }
+    task = await invoke(client.tasks.get, "task_chat")
+    await invoke(task.act, {"message": "Hello"})
+    assert server.messages == ["Hello"]
+
+
+async def test_grade_payload_passed_and_validated_without_requiring_named_actions(
+    setup: Any,
+) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+    await invoke(task.grade, {"answer": "custom"})
+    assert json.loads(server.requests[-1].content)["payload"] == {"answer": "custom"}
+    before = len(server.requests)
+    with pytest.raises(ActionValidationError):
+        await invoke(task.grade, {"answer": float("inf")})
+    assert len(server.requests) == before
+
+
+@pytest.mark.parametrize("mutation", ["act", "grade", "reset"])
+@pytest.mark.parametrize("failure", ["timeout", "connection", 429, 502, 503, 504])
+async def test_mutations_are_never_retried(setup: Any, mutation: str, failure: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+
+    def fail(request: httpx.Request) -> httpx.Response | None:
+        if request.method != "POST":
+            return None
+        if failure == "timeout":
+            raise httpx.ReadTimeout("No definitive reply", request=request)
+        if failure == "connection":
+            raise httpx.ConnectError("Connection closed", request=request)
+        return httpx.Response(failure, json={"detail": "temporarily_unavailable"})
+
+    server.hook = fail
+    with pytest.raises((TransportError, APIError)) as error:
+        await invoke(
+            getattr(task, mutation), *([{"message": "Hello"}] if mutation == "act" else [])
+        )
+    if isinstance(error.value, TransportError):
+        assert error.value.may_have_executed is True
+        assert "inspect task.state() before retrying" in str(error.value)
+    assert sum(req.method == "POST" for req in server.requests) == 1
+
+
+@pytest.mark.parametrize("failure", ["timeout", 429, 502, 503, 504])
+async def test_get_retries_are_bounded_and_can_recover(setup: Any, failure: Any) -> None:
+    client, server = setup
+    attempts = 0
+
+    def fail_twice(request: httpx.Request) -> httpx.Response | None:
+        nonlocal attempts
+        attempts += 1
+        if attempts > 2:
+            return None
+        if failure == "timeout":
+            raise httpx.ReadTimeout("Transient", request=request)
+        return httpx.Response(failure, json={"detail": "try_again"})
+
+    server.hook = fail_twice
+    assert len(await invoke(client.envs.list)) == 1
+    assert attempts == 3
+    attempts = 0
+
+    def fail_always(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("Still unavailable", request=request)
+
+    server.hook = fail_always
+    with pytest.raises(TransportError) as error:
+        await invoke(client.envs.list)
+    assert error.value.may_have_executed is False
+    assert attempts == 3
+
+
+@pytest.mark.parametrize(
+    "status, error_type",
+    [
+        (400, APIError),
+        (401, AuthenticationError),
+        (403, PermissionDeniedError),
+        (404, NotFoundError),
+        (409, ConflictError),
+        (429, LimitExceededError),
+    ],
+)
+async def test_agent_env_error_format(setup: Any, status: int, error_type: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+    server.hook = lambda request: httpx.Response(
+        status,
+        json={"detail": "Quota exhausted", "code": "usage_limit_exceeded", "usage": {"cost": 3}},
     )
-    try:
-        with pytest.raises(error_type) as error:
-            await invoke(client.labs.list)
-        assert error.value.code == code
-        assert error.value.status_code == status
-        assert error.value.details == {"retry": False}
-    finally:
-        await invoke(client.close)
+    with pytest.raises(error_type) as error:
+        await invoke(task.grade)
+    assert error.value.status_code == status
+    assert error.value.code == "usage_limit_exceeded"
+    assert error.value.message == "Quota exhausted"
+    assert error.value.usage == {"cost": 3}
 
 
-@pytest.mark.parametrize("body", [[], {"labs": "not a list"}, {"labs": [{}]}])
-@pytest.mark.parametrize("client_type", [Client, AsyncClient])
-async def test_invalid_success_envelopes_are_protocol_errors(client_type: Any, body: Any) -> None:
-    client = client_type(
-        "test-token", transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+async def test_detail_only_errors_and_unexpected_error_shapes(setup: Any) -> None:
+    client, server = setup
+    server.hook = lambda request: httpx.Response(401, json={"detail": "session_not_found"})
+    with pytest.raises(AuthenticationError) as error:
+        await invoke(client.envs.list)
+    assert error.value.code == "session_not_found"
+    assert len(server.requests) == 1
+    server.hook = lambda request: httpx.Response(
+        422, json={"detail": [{"input": "PRIVATE_PAYLOAD"}]}
     )
-    try:
-        with pytest.raises(ProtocolError):
-            await invoke(client.labs.list)
-    finally:
-        await invoke(client.close)
+    with pytest.raises(APIError) as error:
+        await invoke(client.envs.list)
+    assert "PRIVATE_PAYLOAD" not in str(error.value)
+    assert error.value.code == "http_error"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"not JSON", b"[]", b'{"wrong": "shape"}'],
+)
+async def test_invalid_success_responses_are_protocol_errors(setup: Any, content: bytes) -> None:
+    client, server = setup
+    server.hook = lambda request: httpx.Response(200, content=content)
+    with pytest.raises(ProtocolError):
+        await invoke(client.envs.list)
+
+
+async def test_locked_runtime_response_preserves_prerequisites(setup: Any) -> None:
+    client, server = setup
+    task = await invoke(client.tasks.get, "task_chat")
+    server.hook = lambda request: httpx.Response(
+        200, json={"status": "locked", "missing_prerequisites": [{"ctf_ref": "first"}]}
+    )
+    result = await invoke(task.state)
+    assert result.status == "locked"
+    assert result.missing_prerequisites == [{"ctf_ref": "first"}]
+
+
+async def test_redirect_never_receives_learner_token(setup: Any) -> None:
+    client, server = setup
+    server.hook = lambda request: httpx.Response(
+        307, headers={"Location": "https://other.example/"}
+    )
+    with pytest.raises(APIError) as error:
+        await invoke(client.envs.list)
+    assert error.value.status_code == 307
+    assert len(server.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "identifier", ["../other", "/absolute", "x/y", "x?secret=1", "%2Fescape", ""]
+)
+async def test_identifiers_cannot_escape_api_routes(setup: Any, identifier: str) -> None:
+    client, server = setup
+    for resource in (client.tasks, client.envs):
+        with pytest.raises(ConfigurationError):
+            await invoke(resource.get, identifier)
+    assert server.requests == []
+
+
+async def test_documentation_identity_mismatch_is_rejected(setup: Any) -> None:
+    client, server = setup
+    server.docs["task_chat"]["task_id"] = "unexpected_task"
+    with pytest.raises(ProtocolError, match="different task"):
+        await invoke(client.tasks.get, "task_chat")
 
 
 @pytest.mark.parametrize("client_type", [Client, AsyncClient])
-async def test_no_redirect_token_forwarding(client_type: Any) -> None:
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"token": ""},
+        {"token": " secret"},
+        {"token": "secret\n"},
+        {"base_url": "http://remote.example"},
+        {"base_url": "https://user:pass@example.com"},
+        {"base_url": "https://example.com/path"},
+        {"base_url": "https://example.com?query=1"},
+        {"base_url": "https://example.com#fragment"},
+        {"base_url": "https://[invalid"},
+        {"timeout": 0},
+        {"timeout": float("nan")},
+        {"retry_backoff": -1},
+        {"max_retries": -1},
+        {"max_retries": True},
+    ],
+)
+def test_invalid_configuration(client_type: Any, options: Any) -> None:
+    with pytest.raises(ConfigurationError):
+        client_type(**{"token": "test-token", **options})
+
+
+@pytest.mark.parametrize("client_type", [Client, AsyncClient])
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000/api/agent-env/",
+        "https://example.com/api/agent-env",
+    ],
+)
+async def test_configuration_from_env_and_no_retry_mode(
+    client_type: Any, base_url: str, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("AI_SECURITY_SCHOOL_TOKEN", "env-token")
+    monkeypatch.setenv("AI_SECURITY_SCHOOL_BASE_URL", base_url)
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(302, headers={"Location": "https://elsewhere.example"})
+        assert request.headers["Authorization"] == "Bearer env-token"
+        assert request.url.path == "/api/agent-env/instances"
+        return httpx.Response(503, json={"detail": "temporarily_unavailable"})
 
-    client = client_type("test-token", transport=httpx.MockTransport(handler))
+    client = client_type.from_env(max_retries=0, transport=httpx.MockTransport(handler))
     try:
         with pytest.raises(APIError):
-            await invoke(client.labs.list)
+            await invoke(client.envs.list)
         assert len(requests) == 1
     finally:
         await invoke(client.close)
 
 
-def test_environment_and_url_validation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AI_SECURITY_SCHOOL_TOKEN", raising=False)
-    with pytest.raises(ConfigurationError):
-        Client.from_env()
-    monkeypatch.setenv("AI_SECURITY_SCHOOL_TOKEN", "test-token")
-    monkeypatch.setenv("AI_SECURITY_SCHOOL_BASE_URL", "http://localhost:8000")
-    with Client.from_env() as client:
-        assert str(client._http.base_url) == "http://localhost:8000/api/learner/v1/"
-    for url in ["http://remote.example", "https://user:pass@example.com", "https://a.com/admin"]:
-        with pytest.raises(ConfigurationError):
-            Client("test-token", base_url=url)
+@pytest.mark.parametrize("client_type", [Client, AsyncClient])
+async def test_context_manager_only_closes_transport(client_type: Any) -> None:
+    requests = []
+    client = client_type(
+        "test-token", transport=httpx.MockTransport(lambda req: requests.append(req))
+    )
+    if isinstance(client, Client):
+        with client as entered:
+            assert entered is client
+    else:
+        async with client as entered:
+            assert entered is client
+    assert client._http.is_closed
+    assert requests == []
 
 
-async def test_resource_path_cannot_escape_api(connection: Any) -> None:
-    client, server = connection
-    with pytest.raises(ConfigurationError):
-        await invoke(client.runs.get, "../../admin")
-    assert not server.requests
+def test_backoff_caps_untrusted_retry_after() -> None:
+    assert retry_delay(httpx.Response(429, headers={"Retry-After": "999999999"}), 0, 0.25) == 30
+    assert retry_delay(httpx.Response(429, headers={"Retry-After": "0"}), 0, 0.25) == 0
+    assert retry_delay(httpx.Response(429, headers={"Retry-After": "nan"}), 1, 0.25) == 0.5
+    assert retry_delay(None, 10000, 0.25) == 30
 
 
-async def test_client_close_does_not_close_server_run(connection: Any) -> None:
-    client, server = connection
-    run = await setup_run(client)
-    await invoke(client.close)
-    assert server.runs[run.run_id]["status"] == "idle"
+def test_installed_package_version_matches_public_version() -> None:
+    assert version("ai-security-school-sdk") == __version__ == "0.2.0"
+
+
+async def test_async_cancellation_does_not_resend_a_mutation() -> None:
+    import asyncio
+
+    server = AgentEnvServer()
+    mutation_started = asyncio.Event()
+    never_finishes = asyncio.Event()
+    post_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_count
+        if request.method == "POST":
+            post_count += 1
+            # The server may apply a change before the caller stops waiting.
+            server.messages.append("executed")
+            mutation_started.set()
+            await never_finishes.wait()
+        return server.handle(request)
+
+    async with AsyncClient("test-token", transport=httpx.MockTransport(handler)) as client:
+        task = await client.tasks.get("task_chat")
+        pending = asyncio.create_task(task.act({"message": "executed"}))
+        await asyncio.wait_for(mutation_started.wait(), timeout=1)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert post_count == 1
+        assert (await task.state()).state == {"messages": ["executed"]}

@@ -1,7 +1,7 @@
 [project]
 name = "ai-security-school-sdk"
-version = "0.1.1"
-description = "Python client for AI Security School learner actions and isolated agent experiments"
+version = "0.2.0"
+description = "Python client for AI Security School agent environment documentation and actions"
 readme = "README.md"
 authors = [
     { name = "germankochnev", email = "kochgerm@gmail.com" }
