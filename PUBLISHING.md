@@ -14,9 +14,14 @@ The Python 3.12 distributions are retained as a workflow artifact for seven days
 
 Before tagging, update the version in `pyproject.toml`,
 `src/ai_security_school_sdk/__init__.py`, and the SDK User-Agent in `_http.py`.
+Run `uv lock` to synchronize the root package version in `uv.lock`, and update
+the pinned installation example and example links in `README.md`.
 Keep stable tags in exact `vX.Y.Z` form and never move an existing release tag.
 For a GitHub release, attach the checked wheel/sdist and document the release
 changes. The first GitHub release is `v0.1.0`.
+
+PyPI stores the README with each release; editing it in GitHub does not update
+the package page. Publish a new patch version for README-only corrections.
 
 Users can install that GitHub version without a PyPI account:
 

@@ -9,21 +9,17 @@ Python-клиент для учебных агентских лаборатор�
 
 ## Установка и токен
 
-```sh
-python -m pip install "git+https://github.com/ai-security-lab-itmo/ai-security-school-sdk.git@v0.1.0"
-```
-
-Для установки из Git нужен установленный Git. Альтернатива — готовый wheel
-из релиза, который можно установить без Git:
+Установите SDK из [PyPI](https://pypi.org/project/ai-security-school-sdk/):
 
 ```sh
-python -m pip install "https://github.com/ai-security-lab-itmo/ai-security-school-sdk/releases/download/v0.1.0/ai_security_school_sdk-0.1.0-py3-none-any.whl"
+python -m pip install ai-security-school-sdk
 ```
 
-Обе команды устанавливают зафиксированную версию `0.1.0`. Установка по короткому
-имени `pip install ai-security-school-sdk` станет доступна после публикации в
-PyPI; сейчас используйте одну из команд выше. Настройка публикации описана в
-[PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).
+Чтобы зафиксировать версию для воспроизводимых экспериментов:
+
+```sh
+python -m pip install ai-security-school-sdk==0.1.1
+```
 
 На странице операции выберите «Подключить Python SDK» и получите токен. Он
 ограничен одной операцией и имеет срок действия. Передайте его через переменную
@@ -166,9 +162,9 @@ asyncio.run(main())
 Все методы с сетевым вводом-выводом у `AsyncClient` вызываются через `await`.
 Конструкторы, `from_env()`, поля объектов и `job.result()` синхронные. Asyncio
 отмена локальной coroutine не отменяет серверное задание; сохраняйте `job_id`.
-Примеры: [первый эксперимент](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/first_experiment.py),
-[параллельный поиск](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/async_search.py),
-[этапы и fork](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/multistage.py).
+Примеры: [первый эксперимент](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/first_experiment.py),
+[параллельный поиск](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/async_search.py),
+[этапы и fork](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.1/examples/multistage.py).
 
 Объекты содержат типизированный снимок в `.info`. Методы `refresh()` обновляют его;
 для актуального состояния сервера не полагайтесь на старый снимок. Аргументы и
@@ -188,3 +184,6 @@ uv build
 Пакет не импортирует backend платформы. Тесты используют HTTPX MockTransport и
 проверяют общий HTTP-контракт sync/async клиентов без LLM-вызовов. API имеет базу
 `/api/learner/v1`; его версия не зависит от номера выпуска SDK.
+
+Публикация новых версий в PyPI описана в
+[PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).

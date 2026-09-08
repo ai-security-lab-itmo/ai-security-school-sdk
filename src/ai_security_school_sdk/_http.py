@@ -71,7 +71,7 @@ def client_options(
         "headers": {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "User-Agent": "ai-security-school-sdk/0.1.0",
+            "User-Agent": "ai-security-school-sdk/0.1.1",
         },
         "timeout": timeout,
         "follow_redirects": False,
