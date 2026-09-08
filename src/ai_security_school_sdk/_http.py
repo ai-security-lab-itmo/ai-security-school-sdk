@@ -3,6 +3,7 @@
 import math
 import os
 import re
+from importlib.metadata import version
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -72,7 +73,7 @@ def client_options(
         "headers": {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "User-Agent": "ai-security-school-sdk/0.2.0",
+            "User-Agent": f"ai-security-school-sdk/{version('ai-security-school-sdk')}",
         },
         "timeout": timeout,
         "follow_redirects": False,
@@ -98,18 +99,20 @@ def decode_response(response: httpx.Response) -> JsonObject:
             body = {}
         if not isinstance(body, dict):
             body = {}
-        detail = body.get("detail")
-        message = (
-            detail if isinstance(detail, str) else f"Server returned HTTP {response.status_code}"
-        )
-        code = body.get("code")
-        if not isinstance(code, str):
-            code = detail if isinstance(detail, str) and identifier_code(detail) else "http_error"
+        error = body.get("error")
+        error = error if isinstance(error, dict) else {}
+        code = error.get("code")
+        message = error.get("message")
+        details = error.get("details")
+        details = dict(details) if isinstance(details, dict) else {}
+        for key in ("usage", "retry_after"):
+            if key in body:
+                details[key] = body[key]
         raise api_error(
-            code,
-            message,
+            code if isinstance(code, str) else "http_error",
+            message if isinstance(message, str) else f"Server returned HTTP {response.status_code}",
             status_code=response.status_code,
-            details={key: value for key, value in body.items() if key not in {"detail", "code"}},
+            details=details,
         )
     try:
         value = response.json()
@@ -118,10 +121,6 @@ def decode_response(response: httpx.Response) -> JsonObject:
     if not isinstance(value, dict):
         raise ProtocolError("Expected a JSON object response")
     return value
-
-
-def identifier_code(value: str) -> bool:
-    return re.fullmatch(r"[a-z][a-z0-9_]*", value) is not None
 
 
 def parse_model[ModelT: PublicModel](model: type[ModelT], value: JsonObject) -> ModelT:

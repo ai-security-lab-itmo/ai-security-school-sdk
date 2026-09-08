@@ -189,3 +189,7 @@ uv build
 Пакет не импортирует backend платформы. Sync/async тестируются через HTTPX
 MockTransport против одного контракта `/api/agent-env`.
 Публикация описана в [PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).
+
+## Runtime contract
+
+Version 0.3 targets the coordinated `2026-09-runtime-1` platform release. HTTP failures use `{ "error": { "code", "message", "details" }, "usage", "retry_after" }`. Task prerequisite and completion metadata refer to explicit task IDs; shared environment state does not imply shared task credit. Upgrade the platform, course clients, and SDK together.

@@ -383,7 +383,15 @@ async def test_agent_env_error_format(setup: Any, status: int, error_type: Any) 
     task = await invoke(client.tasks.get, "task_chat")
     server.hook = lambda request: httpx.Response(
         status,
-        json={"detail": "Quota exhausted", "code": "usage_limit_exceeded", "usage": {"cost": 3}},
+        json={
+            "error": {
+                "message": "Quota exhausted",
+                "code": "usage_limit_exceeded",
+                "details": {"operation": "grade"},
+            },
+            "usage": {"cost": 3},
+            "retry_after": 12,
+        },
     )
     with pytest.raises(error_type) as error:
         await invoke(task.grade)
@@ -391,11 +399,15 @@ async def test_agent_env_error_format(setup: Any, status: int, error_type: Any) 
     assert error.value.code == "usage_limit_exceeded"
     assert error.value.message == "Quota exhausted"
     assert error.value.usage == {"cost": 3}
+    assert error.value.details["retry_after"] == 12
+    assert error.value.details["operation"] == "grade"
 
 
-async def test_detail_only_errors_and_unexpected_error_shapes(setup: Any) -> None:
+async def test_nested_errors_and_unexpected_error_shapes(setup: Any) -> None:
     client, server = setup
-    server.hook = lambda request: httpx.Response(401, json={"detail": "session_not_found"})
+    server.hook = lambda request: httpx.Response(
+        401, json={"error": {"code": "session_not_found", "message": "Sign in required"}}
+    )
     with pytest.raises(AuthenticationError) as error:
         await invoke(client.envs.list)
     assert error.value.code == "session_not_found"
@@ -540,7 +552,7 @@ def test_backoff_caps_untrusted_retry_after() -> None:
 
 
 def test_installed_package_version_matches_public_version() -> None:
-    assert version("ai-security-school-sdk") == __version__ == "0.2.0"
+    assert version("ai-security-school-sdk") == __version__ == "0.3.0"
 
 
 async def test_async_cancellation_does_not_resend_a_mutation() -> None:
