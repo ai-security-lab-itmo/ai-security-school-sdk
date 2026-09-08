@@ -1,0 +1,107 @@
+name: SDK checks
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact release commit selected by the publishing workflow
+        type: string
+        required: false
+        default: ""
+      release_tag:
+        description: Optional release tag whose version must match the package
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - name: Check out the exact source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Validate release identity
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Expected an exact stable release tag: vX.Y.Z")
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          if project["name"] != "ai-security-school-sdk" or project["version"] != tag[1:]:
+              raise SystemExit("Release tag does not match package name/version")
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if actual != os.environ["SOURCE_SHA"]:
+              raise SystemExit("Checked-out commit differs from the resolved release commit")
+          PY
+      - name: Install development and packaging dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . --group dev 'build>=1.2,<2' 'twine>=6,<7'
+      - name: Test and check code
+        run: |
+          python -m pytest -q
+          python -m ruff check .
+          python -m mypy src
+      - name: Build and validate distributions
+        run: |
+          python -m build
+          python -m twine check --strict dist/*
+      - name: Install wheel in a clean environment
+        env:
+          SDK_TEST_PYTHON: ${{ matrix.python }}
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit("Expected exactly one wheel")
+          target = Path(os.environ["RUNNER_TEMP"]) / ("sdk-wheel-" + os.environ["SDK_TEST_PYTHON"])
+          subprocess.run([sys.executable, "-m", "venv", str(target)], check=True)
+          python = str(target / "bin" / "python")
+          subprocess.run([python, "-m", "pip", "install", str(wheels[0].resolve())], check=True, cwd=target)
+          subprocess.run([python, "-m", "pip", "check"], check=True, cwd=target)
+          subprocess.run([python, "-I", "-c", "from ai_security_school_sdk import Client, AsyncClient; print('SDK imports OK')"], check=True, cwd=target)
+          PY
+      - name: Retain the distributions checked on Python 3.12
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7

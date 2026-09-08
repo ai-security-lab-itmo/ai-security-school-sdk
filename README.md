@@ -4,14 +4,26 @@ Python-клиент для учебных агентских лаборатор�
 машине, а SDK вызывает явно доступные **действия студента** в персональном прогоне
 на платформе. Внутренние инструменты атакуемого агента через SDK не публикуются.
 
-Требуется Python 3.12+. Версия 0.1.0 предназначена для установки из исходников или
-собранного wheel; публикация в PyPI пока не выполнялась.
+Требуется Python 3.12+. Исходники и релизы доступны в
+[публичном репозитории](https://github.com/ai-security-lab-itmo/ai-security-school-sdk).
 
 ## Установка и токен
 
 ```sh
-pip install /path/to/ai-security-school-sdk
+python -m pip install "git+https://github.com/ai-security-lab-itmo/ai-security-school-sdk.git@v0.1.0"
 ```
+
+Для установки из Git нужен установленный Git. Альтернатива — готовый wheel
+из релиза, который можно установить без Git:
+
+```sh
+python -m pip install "https://github.com/ai-security-lab-itmo/ai-security-school-sdk/releases/download/v0.1.0/ai_security_school_sdk-0.1.0-py3-none-any.whl"
+```
+
+Обе команды устанавливают зафиксированную версию `0.1.0`. Установка по короткому
+имени `pip install ai-security-school-sdk` станет доступна после публикации в
+PyPI; сейчас используйте одну из команд выше. Настройка публикации описана в
+[PUBLISHING.md](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/main/PUBLISHING.md).
 
 На странице операции выберите «Подключить Python SDK» и получите токен. Он
 ограничен одной операцией и имеет срок действия. Передайте его через переменную
@@ -154,9 +166,9 @@ asyncio.run(main())
 Все методы с сетевым вводом-выводом у `AsyncClient` вызываются через `await`.
 Конструкторы, `from_env()`, поля объектов и `job.result()` синхронные. Asyncio
 отмена локальной coroutine не отменяет серверное задание; сохраняйте `job_id`.
-Примеры: [первый эксперимент](examples/first_experiment.py),
-[параллельный поиск](examples/async_search.py),
-[этапы и fork](examples/multistage.py).
+Примеры: [первый эксперимент](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/first_experiment.py),
+[параллельный поиск](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/async_search.py),
+[этапы и fork](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.1.0/examples/multistage.py).
 
 Объекты содержат типизированный снимок в `.info`. Методы `refresh()` обновляют его;
 для актуального состояния сервера не полагайтесь на старый снимок. Аргументы и

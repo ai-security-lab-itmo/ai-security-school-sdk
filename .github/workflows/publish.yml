@@ -1,0 +1,98 @@
+name: Publish SDK to PyPI
+
+# Creating a tag or GitHub release never publishes to PyPI automatically.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag; dispatch this workflow on the same tag
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: pypi-publish
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Validate the immutable release source
+    if: github.repository == 'ai-security-lab-itmo/ai-security-school-sdk'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve the exact tag to a commit
+        id: tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          tag = os.environ["RELEASE_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Expected an exact stable release tag: vX.Y.Z")
+          if os.environ["GITHUB_REF"] != "refs/tags/" + tag:
+              raise SystemExit("Run this workflow with --ref set to the same release tag")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          def api(path):
+              return json.loads(subprocess.check_output(["gh", "api", path], text=True))
+          ref = api(f"repos/{repo}/git/ref/tags/{tag}")
+          if ref.get("ref") != "refs/tags/" + tag:
+              raise SystemExit("GitHub did not return the exact requested tag")
+          target = ref["object"]
+          for _ in range(5):
+              if target["type"] != "tag":
+                  break
+              target = api(f"repos/{repo}/git/tags/{target['sha']}")["object"]
+          sha = target["sha"]
+          if target["type"] != "commit" or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("Release tag must resolve to a commit")
+          if sha != os.environ["GITHUB_SHA"]:
+              raise SystemExit("Tag moved after dispatch; create a new release instead")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"sha={sha}\ntag={tag}\n")
+          print(f"Validated {tag} at {sha}")
+          PY
+
+  verify:
+    name: Check and build the selected release
+    needs: resolve
+    permissions:
+      contents: read
+    uses: ./.github/workflows/check.yml
+    with:
+      source_sha: ${{ needs.resolve.outputs.sha }}
+      release_tag: ${{ needs.resolve.outputs.tag }}
+
+  publish:
+    name: Publish the checked distributions
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ai-security-school-sdk
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+      - name: Publish with PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          print-hash: true
