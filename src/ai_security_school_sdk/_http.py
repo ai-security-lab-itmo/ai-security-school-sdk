@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from .errors import ConfigurationError, ProtocolError, api_error
 from .models import JsonObject, PublicModel
 
-DEFAULT_BASE_URL = "https://plgn.aisecschool.ru"
+DEFAULT_BASE_URL = "https://plgn.hundredflags.ru"
 API_PREFIX = "/api/agent-env/"
 RETRYABLE_STATUS = {429, 502, 503, 504}
 

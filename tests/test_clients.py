@@ -282,7 +282,7 @@ async def test_external_invalid_and_unresolvable_schema_references_are_blocked(
     with pytest.raises(ProtocolError):
         await invoke(task.act, {"message": "Hello"})
     assert not server.messages
-    assert all(req.url.host == "plgn.aisecschool.ru" for req in server.requests)
+    assert all(req.url.host == "plgn.hundredflags.ru" for req in server.requests)
 
 
 async def test_local_schema_references_are_supported(setup: Any) -> None:
@@ -566,7 +566,7 @@ def test_backoff_caps_untrusted_retry_after() -> None:
 
 
 def test_installed_package_version_matches_public_version() -> None:
-    assert version("ai-security-school-sdk") == __version__ == "0.3.0"
+    assert version("ai-security-school-sdk") == __version__ == "0.3.1"
 
 
 async def test_async_cancellation_does_not_resend_a_mutation() -> None:

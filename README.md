@@ -15,10 +15,10 @@ python -m pip install ai-security-school-sdk
 Для воспроизводимой установки этой версии:
 
 ```sh
-python -m pip install ai-security-school-sdk==0.3.0
+python -m pip install ai-security-school-sdk==0.3.1
 ```
 
-Версия 0.3.0 использует контракт платформы `2026-09-runtime-1` и работает с
+Версия 0.3.1 использует контракт платформы `2026-09-runtime-1` и работает с
 существующими экземплярами `agent-env` и их задачами. Обновляйте SDK вместе с
 платформой; отдельные лаборатории или прогоны создавать не нужно.
 
@@ -29,7 +29,7 @@ python -m pip install ai-security-school-sdk==0.3.0
 принадлежит вашему аккаунту и работает со всеми доступными вам задачами;
 конкретную задачу выбирайте по её `task_id` в SDK.
 `AI_SECURITY_SCHOOL_BASE_URL` можно задать для другого развёртывания; по умолчанию
-используется `https://plgn.aisecschool.ru`.
+используется `https://plgn.hundredflags.ru`.
 
 ```sh
 export AI_SECURITY_SCHOOL_TOKEN="YOUR_TOKEN"
@@ -159,9 +159,9 @@ asyncio.run(main())
 получает текущее серверное состояние. Дополнительные поля ответов сохраняются
 в моделях и доступны через `model_dump()`.
 
-Примеры: [документация и вызов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.0/examples/first_experiment.py),
-[последовательный поиск кандидатов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.0/examples/async_search.py),
-[связанные задачи одной среды](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.0/examples/multistage.py).
+Примеры: [документация и вызов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.1/examples/first_experiment.py),
+[последовательный поиск кандидатов](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.1/examples/async_search.py),
+[связанные задачи одной среды](https://github.com/ai-security-lab-itmo/ai-security-school-sdk/blob/v0.3.1/examples/multistage.py).
 
 ## Ошибки и сетевые повторы
 
